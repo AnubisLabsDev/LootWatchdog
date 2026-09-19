@@ -18,7 +18,11 @@ local PREFIX = "|cffff4040LootWatchdog|r"
 -- fast if it misses a real roll in-game.
 --------------------------------------------------------------------------------
 
-LootWatchdogDB = LootWatchdogDB or { enabled = true, debug = false }
+local DEFAULT_WHISPER_MSG = "Can I please have that item since you do not actually need it?"
+
+LootWatchdogDB = LootWatchdogDB or { enabled = true, debug = false, whisperMessage = DEFAULT_WHISPER_MSG, minimap = {} }
+LootWatchdogDB.whisperMessage = LootWatchdogDB.whisperMessage or DEFAULT_WHISPER_MSG
+LootWatchdogDB.minimap = LootWatchdogDB.minimap or {}
 
 local NEED_WORD = _G.NEED or "Need"
 
@@ -159,6 +163,39 @@ local function QueueInspect(unit, callback)
 end
 
 --------------------------------------------------------------------------------
+-- Popup: Call Out / Whisper / Close. StaticPopup maps button1->OnAccept,
+-- button2->OnCancel, button3->OnAlt; if OnAlt is ever wrong on a client, the
+-- worst case is button3 just closes the popup, which is what "Close, do
+-- nothing" wants anyway.
+--------------------------------------------------------------------------------
+
+StaticPopupDialogs["LOOTWATCHDOG_BADNEED"] = {
+	text = "%s",
+	button1 = "Call Out",
+	button2 = "Whisper",
+	button3 = CLOSE or "Close",
+	OnAccept = function(_, data)
+		SendChatMessage(data.announceMsg, IsInRaid() and "RAID" or "PARTY")
+	end,
+	OnCancel = function(_, data, reason)
+		if reason == "clicked" then
+			SendChatMessage(LootWatchdogDB.whisperMessage, "WHISPER", nil, data.playerName)
+		end
+	end,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+	preferredIndex = 3,
+}
+
+local function ShowBadNeedPopup(playerName, announceMsg)
+	StaticPopup_Show("LOOTWATCHDOG_BADNEED", announceMsg, nil, {
+		playerName = playerName,
+		announceMsg = announceMsg,
+	})
+end
+
+--------------------------------------------------------------------------------
 -- Core: on a detected "PlayerName won ITEM (Need)" chat line, inspect the
 -- winner and compare.
 --------------------------------------------------------------------------------
@@ -191,10 +228,10 @@ local function HandleNeedWin(playerName, itemLink)
 				equippedTrack and (" [" .. equippedTrack .. "]") or "",
 				equippedIlvl
 			)
-			if LootWatchdogDB.enabled then
-				SendChatMessage(msg, IsInRaid() and "RAID" or "PARTY")
-			end
 			print(PREFIX .. ": " .. msg)
+			if LootWatchdogDB.enabled then
+				ShowBadNeedPopup(playerName, msg)
+			end
 		end
 	end)
 end
@@ -239,22 +276,67 @@ watcher:SetScript("OnEvent", function(_, _, message)
 end)
 
 --------------------------------------------------------------------------------
+-- Minimap button. Uses LibDBIcon so ElvUI's built-in minimap-button skinning
+-- (Skins > General > Blizzard Minimap / LDB icons) reskins it automatically
+-- to match ElvUI's look, same as it does for every other LDB-based addon.
+--------------------------------------------------------------------------------
+
+local ldbObject = LibStub("LibDataBroker-1.1"):NewDataObject("LootWatchdog", {
+	type = "launcher",
+	text = "LootWatchdog",
+	icon = "Interface\\Icons\\INV_Misc_EyeBall_02",
+	OnClick = function(_, button)
+		if button == "LeftButton" then
+			LootWatchdogDB.enabled = not LootWatchdogDB.enabled
+			print(PREFIX .. ": " .. (LootWatchdogDB.enabled and "enabled" or "disabled"))
+		elseif button == "RightButton" then
+			LootWatchdogDB.debug = not LootWatchdogDB.debug
+			print(PREFIX .. ": debug " .. (LootWatchdogDB.debug and "ON" or "OFF"))
+		end
+	end,
+	OnTooltipShow = function(tooltip)
+		tooltip:AddLine("LootWatchdog")
+		tooltip:AddLine(" ")
+		tooltip:AddLine(("Status: %s"):format(LootWatchdogDB.enabled and "|cff20ff20enabled|r" or "|cffff2020disabled|r"))
+		tooltip:AddLine("|cffffffffLeft-click:|r toggle on/off")
+		tooltip:AddLine("|cffffffffRight-click:|r toggle debug mode")
+	end,
+})
+
+LibStub("LibDBIcon-1.0"):Register("LootWatchdog", ldbObject, LootWatchdogDB.minimap)
+
+--------------------------------------------------------------------------------
 -- Slash command
 --------------------------------------------------------------------------------
 
 SLASH_LOOTWATCHDOG1 = "/lwd"
-SlashCmdList["LOOTWATCHDOG"] = function(msg)
-	msg = (msg or ""):lower():trim()
-	if msg == "debug" then
+SlashCmdList["LOOTWATCHDOG"] = function(input)
+	local cmd, rest = input:match("^(%S*)%s*(.-)$")
+	cmd = cmd:lower()
+	if cmd == "debug" then
 		LootWatchdogDB.debug = not LootWatchdogDB.debug
 		print(PREFIX .. ": debug " .. (LootWatchdogDB.debug and "ON" or "OFF"))
-	elseif msg == "off" then
+	elseif cmd == "off" then
 		LootWatchdogDB.enabled = false
-		print(PREFIX .. ": announcements OFF (still prints locally)")
-	elseif msg == "on" then
+		print(PREFIX .. ": disabled (won't pop up on bad Needs)")
+	elseif cmd == "on" then
 		LootWatchdogDB.enabled = true
-		print(PREFIX .. ": announcements ON")
+		print(PREFIX .. ": enabled")
+	elseif cmd == "minimap" then
+		LootWatchdogDB.minimap.hide = not LootWatchdogDB.minimap.hide
+		if LootWatchdogDB.minimap.hide then
+			LibStub("LibDBIcon-1.0"):Hide("LootWatchdog")
+		else
+			LibStub("LibDBIcon-1.0"):Show("LootWatchdog")
+		end
+	elseif cmd == "msg" then
+		if rest ~= "" then
+			LootWatchdogDB.whisperMessage = rest
+			print(PREFIX .. ": whisper message set to: " .. rest)
+		else
+			print(PREFIX .. ": current whisper message: " .. LootWatchdogDB.whisperMessage)
+		end
 	else
-		print(PREFIX .. ": /lwd on | off | debug")
+		print(PREFIX .. ": /lwd on | off | debug | minimap | msg <text>")
 	end
 end

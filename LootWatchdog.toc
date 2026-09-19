@@ -1,8 +1,13 @@
 ## Interface: 120100
 ## Title: |cffff4040Loot|r Watchdog
-## Notes: Calls out group-loot Need rolls that aren't actually an upgrade for the roller.
+## Notes: Calls out group-loot Need rolls that aren't actually an upgrade for the roller. ElvUI-styled if ElvUI is loaded.
 ## Author: Evan
 ## Version: 1.0.0
 ## SavedVariablesPerCharacter: LootWatchdogDB
+## OptionalDeps: ElvUI
 
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
 LootWatchdog.lua
