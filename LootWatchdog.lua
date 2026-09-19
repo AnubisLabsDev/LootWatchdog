@@ -284,7 +284,7 @@ end)
 local ldbObject = LibStub("LibDataBroker-1.1"):NewDataObject("LootWatchdog", {
 	type = "launcher",
 	text = "LootWatchdog",
-	icon = "Interface\\Icons\\INV_Misc_EyeBall_02",
+	icon = "Interface\\AddOns\\LootWatchdog\\media\\minimap_icon.png",
 	OnClick = function(_, button)
 		if button == "LeftButton" then
 			LootWatchdogDB.enabled = not LootWatchdogDB.enabled
