@@ -26,6 +26,36 @@ LootWatchdogDB.minimap = LootWatchdogDB.minimap or {}
 
 local NEED_WORD = _G.NEED or "Need"
 
+--------------------------------------------------------------------------------
+-- ElvUI-flavored color helper. Same approach as PieSpecSwap/PickPocketPal:
+-- pull ElvUI's own media colors when ElvUI is loaded, otherwise fall back to
+-- a dark backdrop that already looks ElvUI-ish on its own.
+--------------------------------------------------------------------------------
+
+local function GetElvUIColors()
+	local backdrop = { 0.05, 0.05, 0.05, 0.9 }
+	local border = { 0, 0, 0, 1 }
+	local accent = { 0.0, 0.6, 1.0, 1.0 }
+
+	if ElvUI then
+		local ok, E = pcall(function() return unpack(ElvUI) end)
+		if ok and E and E.media then
+			local m = E.media
+			if m.backdropcolor then
+				backdrop = { m.backdropcolor[1], m.backdropcolor[2], m.backdropcolor[3], m.backdropcolor[4] or 0.9 }
+			end
+			if m.bordercolor then
+				border = { m.bordercolor[1], m.bordercolor[2], m.bordercolor[3], m.bordercolor[4] or 1 }
+			end
+			if m.rgbvaluecolor then
+				accent = { m.rgbvaluecolor[1], m.rgbvaluecolor[2], m.rgbvaluecolor[3], 1 }
+			end
+		end
+	end
+
+	return backdrop, border, accent
+end
+
 -- Escape a player/unit name for use inside a Lua pattern.
 local function EscapeForPattern(s)
 	return (s:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1"))
@@ -163,36 +193,132 @@ local function QueueInspect(unit, callback)
 end
 
 --------------------------------------------------------------------------------
--- Popup: Call Out / Whisper / Close. StaticPopup maps button1->OnAccept,
--- button2->OnCancel, button3->OnAlt; if OnAlt is ever wrong on a client, the
--- worst case is button3 just closes the popup, which is what "Close, do
--- nothing" wants anyway.
+-- Popup: Call Out / Whisper / Close. Custom frame instead of StaticPopup,
+-- because StaticPopup always dismisses itself the moment ANY button is
+-- clicked -- this one stays open so Call Out and Whisper can both be used,
+-- in either order, and only the Close button (or Escape) dismisses it.
+-- Multiple bad-Need popups can be open at once (stacked), one per roller,
+-- same as StaticPopup's own dialog stack used to allow.
 --------------------------------------------------------------------------------
 
-StaticPopupDialogs["LOOTWATCHDOG_BADNEED"] = {
-	text = "%s",
-	button1 = "Call Out",
-	button2 = "Whisper",
-	button3 = CLOSE or "Close",
-	OnAccept = function(_, data)
-		SendChatMessage(data.announceMsg, IsInRaid() and "RAID" or "PARTY")
-	end,
-	OnCancel = function(_, data, reason)
-		if reason == "clicked" then
-			SendChatMessage(LootWatchdogDB.whisperMessage, "WHISPER", nil, data.playerName)
+local activeBadNeedPopups = {}
+
+local function RepositionBadNeedPopups()
+	for i, f in ipairs(activeBadNeedPopups) do
+		f:ClearAllPoints()
+		if i == 1 then
+			f:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
+		else
+			f:SetPoint("TOP", activeBadNeedPopups[i - 1], "BOTTOM", 0, -10)
 		end
-	end,
-	timeout = 0,
-	whileDead = true,
-	hideOnEscape = true,
-	preferredIndex = 3,
-}
+	end
+end
+
+local function CreatePopupButton(parent, label, width)
+	local btn = CreateFrame("Button", nil, parent)
+	btn:SetSize(width, 22)
+	btn.bg = btn:CreateTexture(nil, "BACKGROUND")
+	btn.bg:SetAllPoints(btn)
+	btn.bg:SetColorTexture(0.1, 0.1, 0.1, 0.9)
+	btn.hl = btn:CreateTexture(nil, "HIGHLIGHT")
+	btn.hl:SetAllPoints(btn)
+	btn.hl:SetColorTexture(1, 1, 1, 0.12)
+	btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	btn.text:SetAllPoints(btn)
+	btn.text:SetText(label)
+	return btn
+end
+
+local badNeedPopupCounter = 0
 
 local function ShowBadNeedPopup(playerName, announceMsg)
-	StaticPopup_Show("LOOTWATCHDOG_BADNEED", announceMsg, nil, {
-		playerName = playerName,
-		announceMsg = announceMsg,
-	})
+	badNeedPopupCounter = badNeedPopupCounter + 1
+	local frameName = "LootWatchdogBadNeedPopup" .. badNeedPopupCounter
+
+	local f = CreateFrame("Frame", frameName, UIParent)
+	f:SetSize(380, 150)
+	f:SetFrameStrata("DIALOG")
+	f:SetMovable(true)
+	f:EnableMouse(true)
+
+	-- named so Escape closes it too, same as StaticPopup's hideOnEscape did
+	UISpecialFrames = UISpecialFrames or {}
+	table.insert(UISpecialFrames, frameName)
+
+	local backdrop, border = GetElvUIColors()
+	f.bg = f:CreateTexture(nil, "BACKGROUND")
+	f.bg:SetAllPoints(f)
+	f.bg:SetColorTexture(unpack(backdrop))
+	f.border = f:CreateTexture(nil, "BORDER")
+	f.border:SetPoint("TOPLEFT", -2, 2)
+	f.border:SetPoint("BOTTOMRIGHT", 2, -2)
+	f.border:SetColorTexture(unpack(border))
+
+	local titleBar = CreateFrame("Frame", nil, f)
+	titleBar:SetPoint("TOPLEFT")
+	titleBar:SetPoint("TOPRIGHT", -28, 0)
+	titleBar:SetHeight(26)
+	titleBar:EnableMouse(true)
+	titleBar:RegisterForDrag("LeftButton")
+	titleBar:SetScript("OnDragStart", function() f:StartMoving() end)
+	titleBar:SetScript("OnDragStop", function() f:StopMovingOrSizing() end)
+
+	local title = titleBar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	title:SetPoint("LEFT", 10, 0)
+	title:SetText("LootWatchdog")
+
+	local closeBtn = CreateFrame("Button", nil, f)
+	closeBtn:SetSize(24, 24)
+	closeBtn:SetPoint("TOPRIGHT", -4, -4)
+	closeBtn:SetFrameLevel(f:GetFrameLevel() + 5)
+	closeBtn.bg = closeBtn:CreateTexture(nil, "BACKGROUND")
+	closeBtn.bg:SetAllPoints(closeBtn)
+	closeBtn.bg:SetColorTexture(0.5, 0.1, 0.1, 0.9)
+	closeBtn.hl = closeBtn:CreateTexture(nil, "HIGHLIGHT")
+	closeBtn.hl:SetAllPoints(closeBtn)
+	closeBtn.hl:SetColorTexture(1, 1, 1, 0.25)
+	closeBtn.text = closeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	closeBtn.text:SetAllPoints(closeBtn)
+	closeBtn.text:SetText("x")
+	closeBtn:RegisterForClicks("LeftButtonUp", "LeftButtonDown")
+	closeBtn:SetScript("OnClick", function() f:Hide() end)
+
+	f:SetScript("OnHide", function()
+		for i, p in ipairs(activeBadNeedPopups) do
+			if p == f then
+				table.remove(activeBadNeedPopups, i)
+				break
+			end
+		end
+		RepositionBadNeedPopups()
+	end)
+
+	local msg = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	msg:SetPoint("TOPLEFT", 16, -36)
+	msg:SetPoint("RIGHT", f, "RIGHT", -16, 0)
+	msg:SetJustifyH("LEFT")
+	msg:SetWordWrap(true)
+	msg:SetText(announceMsg)
+
+	local callOutBtn = CreatePopupButton(f, "Call Out", 110)
+	callOutBtn:SetPoint("BOTTOMLEFT", 16, 14)
+	callOutBtn:SetScript("OnClick", function()
+		SendChatMessage(announceMsg, IsInRaid() and "RAID" or "PARTY")
+	end)
+
+	local whisperBtn = CreatePopupButton(f, "Whisper", 110)
+	whisperBtn:SetPoint("LEFT", callOutBtn, "RIGHT", 8, 0)
+	whisperBtn:SetScript("OnClick", function()
+		SendChatMessage(LootWatchdogDB.whisperMessage, "WHISPER", nil, playerName)
+	end)
+
+	local closeActionBtn = CreatePopupButton(f, CLOSE or "Close", 110)
+	closeActionBtn:SetPoint("LEFT", whisperBtn, "RIGHT", 8, 0)
+	closeActionBtn:SetScript("OnClick", function() f:Hide() end)
+
+	table.insert(activeBadNeedPopups, f)
+	RepositionBadNeedPopups()
+	f:Show()
 end
 
 --------------------------------------------------------------------------------
@@ -274,36 +400,6 @@ watcher:SetScript("OnEvent", function(_, _, message)
 		end
 	end
 end)
-
---------------------------------------------------------------------------------
--- ElvUI-flavored color helper. Same approach as PieSpecSwap/PickPocketPal:
--- pull ElvUI's own media colors when ElvUI is loaded, otherwise fall back to
--- a dark backdrop that already looks ElvUI-ish on its own.
---------------------------------------------------------------------------------
-
-local function GetElvUIColors()
-	local backdrop = { 0.05, 0.05, 0.05, 0.9 }
-	local border = { 0, 0, 0, 1 }
-	local accent = { 0.0, 0.6, 1.0, 1.0 }
-
-	if ElvUI then
-		local ok, E = pcall(function() return unpack(ElvUI) end)
-		if ok and E and E.media then
-			local m = E.media
-			if m.backdropcolor then
-				backdrop = { m.backdropcolor[1], m.backdropcolor[2], m.backdropcolor[3], m.backdropcolor[4] or 0.9 }
-			end
-			if m.bordercolor then
-				border = { m.bordercolor[1], m.bordercolor[2], m.bordercolor[3], m.bordercolor[4] or 1 }
-			end
-			if m.rgbvaluecolor then
-				accent = { m.rgbvaluecolor[1], m.rgbvaluecolor[2], m.rgbvaluecolor[3], 1 }
-			end
-		end
-	end
-
-	return backdrop, border, accent
-end
 
 --------------------------------------------------------------------------------
 -- Settings window (right-click the minimap icon). Shows the whisper message
