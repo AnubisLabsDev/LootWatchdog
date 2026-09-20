@@ -2,7 +2,7 @@
 ## Title: |cffff4040Loot|r Watchdog
 ## Notes: Calls out group-loot Need rolls that aren't actually an upgrade for the roller. ElvUI-styled if ElvUI is loaded.
 ## Author: Evan
-## Version: 1.2.0
+## Version: 1.3.0
 ## X-Curse-Project-ID: 1703469
 ## SavedVariablesPerCharacter: LootWatchdogDB
 ## OptionalDeps: ElvUI
