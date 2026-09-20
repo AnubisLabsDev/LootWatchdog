@@ -37,6 +37,12 @@ local function ApplyItemPlaceholder(message, itemText)
 	return (message:gsub("%%item", function() return itemText end))
 end
 
+local function DebugPrint(msg)
+	if LootWatchdogDB.debug then
+		print(PREFIX .. " [debug]: " .. msg)
+	end
+end
+
 local NEED_WORD = _G.NEED or "Need"
 
 --------------------------------------------------------------------------------
@@ -211,9 +217,11 @@ local function ProcessInspectQueue()
 	end
 	local job = table.remove(inspectQueue, 1)
 	inspecting = job
+	DebugPrint("requesting inspect for " .. job.unit)
 	NotifyInspect(job.unit)
 	C_Timer.After(5, function()
 		if inspecting == job then
+			DebugPrint("inspect timed out for " .. job.unit .. " (no INSPECT_READY within 5s)")
 			inspecting = false
 			ProcessInspectQueue()
 		end
@@ -376,18 +384,25 @@ end
 local function HandleLootWin(playerName, itemLink, reason)
 	local unit = FindUnitByName(playerName)
 	if not unit then
+		DebugPrint(("skipping %s for %s: not found in group (cross-realm name mismatch, or they already left)"):format(itemLink, playerName))
 		return
 	end
 
 	local _, _, _, equipLoc = C_Item.GetItemInfoInstant(itemLink)
 	local slots = equipLoc and EQUIP_SLOTS[equipLoc]
 	if not slots then
+		DebugPrint(("skipping %s for %s: not equippable gear (equipLoc=%s)"):format(itemLink, playerName, tostring(equipLoc)))
 		return -- not gear, nothing to compare
 	end
 
+	DebugPrint(("queuing inspect on %s for %s"):format(playerName, itemLink))
 	QueueInspect(unit, function(inspectedUnit)
 		local droppedIlvl = select(1, C_Item.GetDetailedItemLevelInfo(itemLink))
 		local equippedIlvl, equippedLink = GetWorseEquippedItemLevel(inspectedUnit, slots)
+
+		DebugPrint(("inspect result for %s: dropped ilvl %s vs equipped ilvl %s (%s)"):format(
+			playerName, tostring(droppedIlvl), tostring(equippedIlvl), equippedLink or "no equipped item found"
+		))
 
 		if droppedIlvl and equippedIlvl > 0 and droppedIlvl <= equippedIlvl then
 			local droppedTrack = GetTrackName(itemLink)
