@@ -2,20 +2,27 @@ local ADDON_NAME = ...
 local PREFIX = "|cffff4040LootWatchdog|r"
 
 --------------------------------------------------------------------------------
--- KNOWN LIMITATION (please read): this addon only fires for the "group loot"
--- roll system (Need/Greed/DE/Pass). Current-tier raids/M+ almost always use
--- Personal Loot, which has no rolls at all -- there's nothing to watch there.
--- This is aimed at legacy-raid farming, "Need before Greed" premade groups,
--- and any group loot method where rolling still happens.
+-- Watches two different loot systems, both via CHAT_MSG_LOOT:
+--   1. Group Loot Need rolls (legacy raids, "Need before Greed" premades,
+--      any group that still uses the Need/Greed/DE/Pass system).
+--   2. Personal Loot (current-tier raids/M+/dungeons -- no roll at all, the
+--      item is just silently assigned and reported as "PlayerName receives
+--      loot: ITEM").
 --
--- The trickiest part of this addon -- and the one piece I can't verify
--- without a live client -- is recognizing "PlayerName won ITEM (Need)" text
--- in the CHAT_MSG_LOOT feed. Rather than hardcode an exact English sentence
--- (which breaks on other locales and might just be wrong), it heuristically
--- checks that a chat-loot line contains all three of: a group member's name,
--- an item link, and the client's own localized word for "Need". Run
--- `/lwd debug` to print every raw CHAT_MSG_LOOT line so we can tune this
--- fast if it misses a real roll in-game.
+-- Recognizing #1 is the trickiest part -- and the one piece I can't verify
+-- without a live client -- since there's no reliable exact English sentence
+-- to hardcode for "PlayerName won ITEM (Need)" (breaks on other locales,
+-- might just be wrong). It heuristically checks that a chat-loot line
+-- contains all three of: a group member's name, an item link, and the
+-- client's own localized word for "Need".
+--
+-- #2 is far more reliable: Blizzard's own "%s receives loot: %s" template
+-- (_G.LOOT_ITEM) is converted straight into a Lua pattern, and the
+-- recipient's name comes from CHAT_MSG_LOOT's own event argument rather
+-- than being parsed out of the message text.
+--
+-- Run `/lwd debug` to print every raw CHAT_MSG_LOOT line (plus the event's
+-- looter argument) so either path can be tuned fast against a real client.
 --------------------------------------------------------------------------------
 
 local DEFAULT_WHISPER_MSG = "Can I please have %item since you do not actually need it?"
@@ -359,11 +366,14 @@ local function ShowBadNeedPopup(playerName, itemLink, announceMsg)
 end
 
 --------------------------------------------------------------------------------
--- Core: on a detected "PlayerName won ITEM (Need)" chat line, inspect the
--- winner and compare.
+-- Core: on a detected loot line -- either "PlayerName won ITEM (Need)" (Group
+-- Loot) or "PlayerName receives loot: ITEM" (Personal Loot, no roll at all)
+-- -- inspect the recipient and compare. "reason" only changes the wording:
+-- Personal Loot never involved a Need click, so the message shouldn't claim
+-- one happened.
 --------------------------------------------------------------------------------
 
-local function HandleNeedWin(playerName, itemLink)
+local function HandleLootWin(playerName, itemLink, reason)
 	local unit = FindUnitByName(playerName)
 	if not unit then
 		return
@@ -394,8 +404,10 @@ local function HandleNeedWin(playerName, itemLink)
 				pctClause = (" -- roughly %d%% below what they already have"):format(math.floor(-pct + 0.5))
 			end
 
-			local msg = ("%s needed on %s%s (ilvl %d) but already has %s%s (ilvl %d) equipped%s%s."):format(
+			local verb = (reason == "personal") and "received" or "needed on"
+			local msg = ("%s %s %s%s (ilvl %d) but already has %s%s (ilvl %d) equipped%s%s."):format(
 				playerName,
+				verb,
 				itemLink,
 				droppedTrack and (" [" .. droppedTrack .. "]") or "",
 				droppedIlvl or 0,
@@ -419,36 +431,56 @@ end
 
 local ITEM_LINK_PATTERN = "|c%x+|Hitem:.-|h%[.-%]|h|r"
 
+-- Personal Loot has no roll at all -- the item is just silently assigned and
+-- reported via Blizzard's own "PlayerName receives loot: ITEM" chat template
+-- (_G.LOOT_ITEM), never the word "Need". Matched the way PersonalLootHelper
+-- does it: convert Blizzard's own localized template into a Lua pattern
+-- instead of hardcoding English, so it still works on other locales.
+local LOOT_ITEM_PATTERN = _G.LOOT_ITEM and _G.LOOT_ITEM:gsub("%%s", "(.-)")
+
 local watcher = CreateFrame("Frame")
 watcher:RegisterEvent("CHAT_MSG_LOOT")
-watcher:SetScript("OnEvent", function(_, _, message)
+watcher:SetScript("OnEvent", function(_, _, message, _, _, _, looter)
 	if LootWatchdogDB.debug then
-		print(PREFIX .. " [debug]: " .. message)
+		print(PREFIX .. " [debug]: " .. message .. " |cff888888(looter arg: " .. tostring(looter) .. ")|r")
 	end
 
 	local itemLink = message:match(ITEM_LINK_PATTERN)
-	if not itemLink or not message:find(NEED_WORD, 1, true) then
+	if not itemLink then
 		return
 	end
 
-	-- find which group member's name appears in this line
-	local candidates = {}
-	if IsInRaid() then
-		for i = 1, GetNumGroupMembers() do
-			table.insert(candidates, UnitName("raid" .. i))
+	if message:find(NEED_WORD, 1, true) then
+		-- Group Loot Need roll: find which group member's name appears in this line
+		local candidates = {}
+		if IsInRaid() then
+			for i = 1, GetNumGroupMembers() do
+				table.insert(candidates, UnitName("raid" .. i))
+			end
+		elseif IsInGroup() then
+			table.insert(candidates, UnitName("player"))
+			for i = 1, GetNumGroupMembers() - 1 do
+				table.insert(candidates, UnitName("party" .. i))
+			end
 		end
-	elseif IsInGroup() then
-		table.insert(candidates, UnitName("player"))
-		for i = 1, GetNumGroupMembers() - 1 do
-			table.insert(candidates, UnitName("party" .. i))
+
+		for _, name in ipairs(candidates) do
+			if name and message:find(EscapeForPattern(name)) then
+				HandleLootWin(name, itemLink, "need")
+				return
+			end
 		end
+		return
 	end
 
-	for _, name in ipairs(candidates) do
-		if name and message:find(EscapeForPattern(name)) then
-			HandleNeedWin(name, itemLink)
-			break
-		end
+	-- Personal Loot assignment. The recipient's name comes from the event's
+	-- own "looter" argument (same technique PersonalLootHelper uses), not by
+	-- parsing it out of the message text -- more reliable than a substring
+	-- search, and the only way we don't have a real name to work with. We
+	-- only watch what OTHER players receive; not calling ourselves out.
+	if LOOT_ITEM_PATTERN and looter and looter ~= "" and looter ~= UnitName("player")
+		and message:match(LOOT_ITEM_PATTERN) then
+		HandleLootWin(looter, itemLink, "personal")
 	end
 end)
 
