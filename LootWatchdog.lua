@@ -276,6 +276,161 @@ watcher:SetScript("OnEvent", function(_, _, message)
 end)
 
 --------------------------------------------------------------------------------
+-- ElvUI-flavored color helper. Same approach as PieSpecSwap/PickPocketPal:
+-- pull ElvUI's own media colors when ElvUI is loaded, otherwise fall back to
+-- a dark backdrop that already looks ElvUI-ish on its own.
+--------------------------------------------------------------------------------
+
+local function GetElvUIColors()
+	local backdrop = { 0.05, 0.05, 0.05, 0.9 }
+	local border = { 0, 0, 0, 1 }
+	local accent = { 0.0, 0.6, 1.0, 1.0 }
+
+	if ElvUI then
+		local ok, E = pcall(function() return unpack(ElvUI) end)
+		if ok and E and E.media then
+			local m = E.media
+			if m.backdropcolor then
+				backdrop = { m.backdropcolor[1], m.backdropcolor[2], m.backdropcolor[3], m.backdropcolor[4] or 0.9 }
+			end
+			if m.bordercolor then
+				border = { m.bordercolor[1], m.bordercolor[2], m.bordercolor[3], m.bordercolor[4] or 1 }
+			end
+			if m.rgbvaluecolor then
+				accent = { m.rgbvaluecolor[1], m.rgbvaluecolor[2], m.rgbvaluecolor[3], 1 }
+			end
+		end
+	end
+
+	return backdrop, border, accent
+end
+
+--------------------------------------------------------------------------------
+-- Settings window (right-click the minimap icon). Shows the whisper message
+-- sent when you click "Whisper" on the bad-Need popup, defaulting to
+-- DEFAULT_WHISPER_MSG and editable/savable in place.
+--------------------------------------------------------------------------------
+
+local settingsFrame
+
+local function CreateSettingsFrame()
+	local f = CreateFrame("Frame", "LootWatchdogSettings", UIParent)
+	f:SetSize(360, 230)
+	f:SetPoint("CENTER")
+	f:SetFrameStrata("DIALOG")
+	f:SetMovable(true)
+	f:EnableMouse(true)
+	f:Hide()
+
+	local backdrop, border = GetElvUIColors()
+	f.bg = f:CreateTexture(nil, "BACKGROUND")
+	f.bg:SetAllPoints(f)
+	f.bg:SetColorTexture(unpack(backdrop))
+	f.border = f:CreateTexture(nil, "BORDER")
+	f.border:SetPoint("TOPLEFT", -2, 2)
+	f.border:SetPoint("BOTTOMRIGHT", 2, -2)
+	f.border:SetColorTexture(unpack(border))
+
+	-- title bar doubles as the drag handle
+	local titleBar = CreateFrame("Frame", nil, f)
+	titleBar:SetPoint("TOPLEFT")
+	titleBar:SetPoint("TOPRIGHT", -28, 0)
+	titleBar:SetHeight(26)
+	titleBar:EnableMouse(true)
+	titleBar:RegisterForDrag("LeftButton")
+	titleBar:SetScript("OnDragStart", function() f:StartMoving() end)
+	titleBar:SetScript("OnDragStop", function() f:StopMovingOrSizing() end)
+
+	local title = titleBar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	title:SetPoint("LEFT", 10, 0)
+	title:SetText("LootWatchdog Settings")
+
+	local closeBtn = CreateFrame("Button", nil, f)
+	closeBtn:SetSize(24, 24)
+	closeBtn:SetPoint("TOPRIGHT", -4, -4)
+	closeBtn:SetFrameLevel(f:GetFrameLevel() + 5)
+	closeBtn.bg = closeBtn:CreateTexture(nil, "BACKGROUND")
+	closeBtn.bg:SetAllPoints(closeBtn)
+	closeBtn.bg:SetColorTexture(0.5, 0.1, 0.1, 0.9)
+	closeBtn.hl = closeBtn:CreateTexture(nil, "HIGHLIGHT")
+	closeBtn.hl:SetAllPoints(closeBtn)
+	closeBtn.hl:SetColorTexture(1, 1, 1, 0.25)
+	closeBtn.text = closeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	closeBtn.text:SetAllPoints(closeBtn)
+	closeBtn.text:SetText("x")
+	closeBtn:RegisterForClicks("LeftButtonUp", "LeftButtonDown")
+	closeBtn:SetScript("OnClick", function() f:Hide() end)
+
+	-- Escape closes the panel like any other Blizzard window.
+	UISpecialFrames = UISpecialFrames or {}
+	table.insert(UISpecialFrames, "LootWatchdogSettings")
+
+	local label = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	label:SetPoint("TOPLEFT", 16, -36)
+	label:SetPoint("RIGHT", f, "RIGHT", -16, 0)
+	label:SetJustifyH("LEFT")
+	label:SetText("Whisper message sent to the roller when you click Whisper on the popup:")
+
+	local editBoxBg = f:CreateTexture(nil, "BACKGROUND")
+	editBoxBg:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -8)
+	editBoxBg:SetPoint("RIGHT", f, "RIGHT", -16, 0)
+	editBoxBg:SetHeight(90)
+	editBoxBg:SetColorTexture(0.1, 0.1, 0.1, 0.9)
+
+	local scrollFrame = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
+	scrollFrame:SetPoint("TOPLEFT", editBoxBg, "TOPLEFT", 6, -6)
+	scrollFrame:SetPoint("BOTTOMRIGHT", editBoxBg, "BOTTOMRIGHT", -26, 6)
+
+	local editBox = CreateFrame("EditBox", nil, scrollFrame)
+	editBox:SetMultiLine(true)
+	editBox:SetFontObject(ChatFontNormal)
+	editBox:SetAutoFocus(false)
+	editBox:SetWidth(scrollFrame:GetWidth())
+	editBox:SetText(LootWatchdogDB.whisperMessage)
+	editBox:SetScript("OnEscapePressed", function(eb) eb:ClearFocus() end)
+	editBox:SetScript("OnTextChanged", function(eb)
+		LootWatchdogDB.whisperMessage = eb:GetText()
+	end)
+	scrollFrame:SetScrollChild(editBox)
+	scrollFrame:SetScript("OnSizeChanged", function(_, w) editBox:SetWidth(w) end)
+	f.editBox = editBox
+
+	local resetBtn = CreateFrame("Button", nil, f)
+	resetBtn:SetSize(140, 22)
+	resetBtn:SetPoint("TOPLEFT", editBoxBg, "BOTTOMLEFT", 0, -12)
+	resetBtn.bg = resetBtn:CreateTexture(nil, "BACKGROUND")
+	resetBtn.bg:SetAllPoints(resetBtn)
+	resetBtn.bg:SetColorTexture(0.1, 0.1, 0.1, 0.9)
+	resetBtn.hl = resetBtn:CreateTexture(nil, "HIGHLIGHT")
+	resetBtn.hl:SetAllPoints(resetBtn)
+	resetBtn.hl:SetColorTexture(1, 1, 1, 0.12)
+	resetBtn.text = resetBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	resetBtn.text:SetAllPoints(resetBtn)
+	resetBtn.text:SetText("Reset to Default")
+	resetBtn:SetScript("OnClick", function()
+		LootWatchdogDB.whisperMessage = DEFAULT_WHISPER_MSG
+		editBox:SetText(DEFAULT_WHISPER_MSG)
+	end)
+
+	settingsFrame = f
+	return f
+end
+
+local function ToggleSettings()
+	if not settingsFrame then
+		CreateSettingsFrame()
+	else
+		settingsFrame.editBox:SetText(LootWatchdogDB.whisperMessage)
+	end
+
+	if settingsFrame:IsShown() then
+		settingsFrame:Hide()
+	else
+		settingsFrame:Show()
+	end
+end
+
+--------------------------------------------------------------------------------
 -- Minimap button. Uses LibDBIcon so ElvUI's built-in minimap-button skinning
 -- (Skins > General > Blizzard Minimap / LDB icons) reskins it automatically
 -- to match ElvUI's look, same as it does for every other LDB-based addon.
@@ -290,8 +445,7 @@ local ldbObject = LibStub("LibDataBroker-1.1"):NewDataObject("LootWatchdog", {
 			LootWatchdogDB.enabled = not LootWatchdogDB.enabled
 			print(PREFIX .. ": " .. (LootWatchdogDB.enabled and "enabled" or "disabled"))
 		elseif button == "RightButton" then
-			LootWatchdogDB.debug = not LootWatchdogDB.debug
-			print(PREFIX .. ": debug " .. (LootWatchdogDB.debug and "ON" or "OFF"))
+			ToggleSettings()
 		end
 	end,
 	OnTooltipShow = function(tooltip)
@@ -299,7 +453,7 @@ local ldbObject = LibStub("LibDataBroker-1.1"):NewDataObject("LootWatchdog", {
 		tooltip:AddLine(" ")
 		tooltip:AddLine(("Status: %s"):format(LootWatchdogDB.enabled and "|cff20ff20enabled|r" or "|cffff2020disabled|r"))
 		tooltip:AddLine("|cffffffffLeft-click:|r toggle on/off")
-		tooltip:AddLine("|cffffffffRight-click:|r toggle debug mode")
+		tooltip:AddLine("|cffffffffRight-click:|r open settings")
 	end,
 })
 
@@ -336,7 +490,9 @@ SlashCmdList["LOOTWATCHDOG"] = function(input)
 		else
 			print(PREFIX .. ": current whisper message: " .. LootWatchdogDB.whisperMessage)
 		end
+	elseif cmd == "settings" or cmd == "options" then
+		ToggleSettings()
 	else
-		print(PREFIX .. ": /lwd on | off | debug | minimap | msg <text>")
+		print(PREFIX .. ": /lwd on | off | debug | minimap | msg <text> | settings")
 	end
 end
