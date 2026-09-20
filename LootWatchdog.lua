@@ -132,6 +132,11 @@ end
 
 local KNOWN_TRACKS = { "Explorer", "Adventurer", "Veteran", "Champion", "Hero", "Myth" }
 
+local TRACK_RANK = {}
+for i, track in ipairs(KNOWN_TRACKS) do
+	TRACK_RANK[track] = i
+end
+
 local function GetTrackName(itemLink)
 	if not itemLink then
 		return nil
@@ -151,6 +156,31 @@ local function GetTrackName(itemLink)
 		end
 	end
 	return nil
+end
+
+--------------------------------------------------------------------------------
+-- Rough "how far below what they already have" percentage. Same technique
+-- GearMatic falls back to when it doesn't trust a full stat-weighted score
+-- (trinkets/rings/weapons): item-level delta plus a track-tier delta, the
+-- tier converted at a fixed ilvl-equivalent rate and capped, expressed as a
+-- percent of the equipped item's ilvl. No per-spec stat weights needed.
+--------------------------------------------------------------------------------
+
+local ILVL_PER_TRACK_TIER = 1.5
+local MAX_TRACK_PCT_CONTRIBUTION = 13
+
+local function EstimatePercentBelowEquipped(droppedIlvl, equippedIlvl, droppedTrack, equippedTrack)
+	if not droppedIlvl or not equippedIlvl or equippedIlvl <= 0 then
+		return nil
+	end
+
+	local trackAdj = 0
+	if droppedTrack and equippedTrack and TRACK_RANK[droppedTrack] and TRACK_RANK[equippedTrack] then
+		trackAdj = (TRACK_RANK[droppedTrack] - TRACK_RANK[equippedTrack]) * ILVL_PER_TRACK_TIER
+		trackAdj = math.max(-MAX_TRACK_PCT_CONTRIBUTION, math.min(MAX_TRACK_PCT_CONTRIBUTION, trackAdj))
+	end
+
+	return ((droppedIlvl - equippedIlvl) + trackAdj) / equippedIlvl * 100
 end
 
 --------------------------------------------------------------------------------
@@ -345,14 +375,28 @@ local function HandleNeedWin(playerName, itemLink)
 		if droppedIlvl and equippedIlvl > 0 and droppedIlvl <= equippedIlvl then
 			local droppedTrack = GetTrackName(itemLink)
 			local equippedTrack = equippedLink and GetTrackName(equippedLink)
-			local msg = ("%s needed on %s%s (ilvl %d) but already has %s%s (ilvl %d) equipped -- not an upgrade."):format(
+
+			local trackClause = ""
+			if droppedTrack and equippedTrack and droppedTrack ~= equippedTrack then
+				trackClause = (" (downgrading from %s to %s)"):format(equippedTrack, droppedTrack)
+			end
+
+			local pctClause = ""
+			local pct = EstimatePercentBelowEquipped(droppedIlvl, equippedIlvl, droppedTrack, equippedTrack)
+			if pct and pct < 0 then
+				pctClause = (" -- roughly %d%% below what they already have"):format(math.floor(-pct + 0.5))
+			end
+
+			local msg = ("%s needed on %s%s (ilvl %d) but already has %s%s (ilvl %d) equipped%s%s."):format(
 				playerName,
 				itemLink,
 				droppedTrack and (" [" .. droppedTrack .. "]") or "",
 				droppedIlvl or 0,
 				equippedLink or "?",
 				equippedTrack and (" [" .. equippedTrack .. "]") or "",
-				equippedIlvl
+				equippedIlvl,
+				trackClause,
+				pctClause
 			)
 			print(PREFIX .. ": " .. msg)
 			if LootWatchdogDB.enabled then
