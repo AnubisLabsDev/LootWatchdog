@@ -3,6 +3,7 @@
 ## Notes: Calls out group-loot Need rolls that aren't actually an upgrade for the roller. ElvUI-styled if ElvUI is loaded.
 ## Author: Evan
 ## Version: 1.0.0
+## X-Curse-Project-ID: 1703469
 ## SavedVariablesPerCharacter: LootWatchdogDB
 ## OptionalDeps: ElvUI
 
