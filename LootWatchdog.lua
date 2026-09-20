@@ -18,11 +18,17 @@ local PREFIX = "|cffff4040LootWatchdog|r"
 -- fast if it misses a real roll in-game.
 --------------------------------------------------------------------------------
 
-local DEFAULT_WHISPER_MSG = "Can I please have that item since you do not actually need it?"
+local DEFAULT_WHISPER_MSG = "Can I please have %item since you do not actually need it?"
 
 LootWatchdogDB = LootWatchdogDB or { enabled = true, debug = false, whisperMessage = DEFAULT_WHISPER_MSG, minimap = {} }
 LootWatchdogDB.whisperMessage = LootWatchdogDB.whisperMessage or DEFAULT_WHISPER_MSG
 LootWatchdogDB.minimap = LootWatchdogDB.minimap or {}
+
+-- Substitutes the literal "%item" placeholder with the item's real hyperlink
+-- (or a plain placeholder string for settings-window previews).
+local function ApplyItemPlaceholder(message, itemText)
+	return (message:gsub("%%item", function() return itemText end))
+end
 
 local NEED_WORD = _G.NEED or "Need"
 
@@ -261,7 +267,7 @@ end
 
 local badNeedPopupCounter = 0
 
-local function ShowBadNeedPopup(playerName, announceMsg)
+local function ShowBadNeedPopup(playerName, itemLink, announceMsg)
 	badNeedPopupCounter = badNeedPopupCounter + 1
 	local frameName = "LootWatchdogBadNeedPopup" .. badNeedPopupCounter
 
@@ -339,7 +345,8 @@ local function ShowBadNeedPopup(playerName, announceMsg)
 	local whisperBtn = CreatePopupButton(f, "Whisper", 110)
 	whisperBtn:SetPoint("LEFT", callOutBtn, "RIGHT", 8, 0)
 	whisperBtn:SetScript("OnClick", function()
-		SendChatMessage(LootWatchdogDB.whisperMessage, "WHISPER", nil, playerName)
+		local whisperMsg = ApplyItemPlaceholder(LootWatchdogDB.whisperMessage, itemLink or "")
+		SendChatMessage(whisperMsg, "WHISPER", nil, playerName)
 	end)
 
 	local closeActionBtn = CreatePopupButton(f, CLOSE or "Close", 110)
@@ -400,7 +407,7 @@ local function HandleNeedWin(playerName, itemLink)
 			)
 			print(PREFIX .. ": " .. msg)
 			if LootWatchdogDB.enabled then
-				ShowBadNeedPopup(playerName, msg)
+				ShowBadNeedPopup(playerName, itemLink, msg)
 			end
 		end
 	end)
@@ -455,7 +462,7 @@ local settingsFrame
 
 local function CreateSettingsFrame()
 	local f = CreateFrame("Frame", "LootWatchdogSettings", UIParent)
-	f:SetSize(360, 230)
+	f:SetSize(360, 260)
 	f:SetPoint("CENTER")
 	f:SetFrameStrata("DIALOG")
 	f:SetMovable(true)
@@ -509,7 +516,7 @@ local function CreateSettingsFrame()
 	label:SetPoint("TOPLEFT", 16, -36)
 	label:SetPoint("RIGHT", f, "RIGHT", -16, 0)
 	label:SetJustifyH("LEFT")
-	label:SetText("Whisper message sent to the roller when you click Whisper on the popup:")
+	label:SetText("Whisper message sent to the roller when you click Whisper on the popup. Use %item to include the item link:")
 
 	local editBoxBg = f:CreateTexture(nil, "BACKGROUND")
 	editBoxBg:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -8)
@@ -521,6 +528,18 @@ local function CreateSettingsFrame()
 	scrollFrame:SetPoint("TOPLEFT", editBoxBg, "TOPLEFT", 6, -6)
 	scrollFrame:SetPoint("BOTTOMRIGHT", editBoxBg, "BOTTOMRIGHT", -26, 6)
 
+	local SAMPLE_ITEM_TEXT = "[Sample Item]"
+
+	local preview = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	preview:SetPoint("TOPLEFT", editBoxBg, "BOTTOMLEFT", 0, -8)
+	preview:SetPoint("RIGHT", f, "RIGHT", -16, 0)
+	preview:SetJustifyH("LEFT")
+	preview:SetWordWrap(true)
+
+	local function RefreshPreview(text)
+		preview:SetText("Preview: " .. ApplyItemPlaceholder(text, SAMPLE_ITEM_TEXT))
+	end
+
 	local editBox = CreateFrame("EditBox", nil, scrollFrame)
 	editBox:SetMultiLine(true)
 	editBox:SetFontObject(ChatFontNormal)
@@ -530,14 +549,18 @@ local function CreateSettingsFrame()
 	editBox:SetScript("OnEscapePressed", function(eb) eb:ClearFocus() end)
 	editBox:SetScript("OnTextChanged", function(eb)
 		LootWatchdogDB.whisperMessage = eb:GetText()
+		RefreshPreview(eb:GetText())
 	end)
 	scrollFrame:SetScrollChild(editBox)
 	scrollFrame:SetScript("OnSizeChanged", function(_, w) editBox:SetWidth(w) end)
 	f.editBox = editBox
+	f.preview = preview
+	f.RefreshPreview = RefreshPreview
+	RefreshPreview(LootWatchdogDB.whisperMessage)
 
 	local resetBtn = CreateFrame("Button", nil, f)
 	resetBtn:SetSize(140, 22)
-	resetBtn:SetPoint("TOPLEFT", editBoxBg, "BOTTOMLEFT", 0, -12)
+	resetBtn:SetPoint("TOPLEFT", preview, "BOTTOMLEFT", 0, -10)
 	resetBtn.bg = resetBtn:CreateTexture(nil, "BACKGROUND")
 	resetBtn.bg:SetAllPoints(resetBtn)
 	resetBtn.bg:SetColorTexture(0.1, 0.1, 0.1, 0.9)
@@ -550,6 +573,7 @@ local function CreateSettingsFrame()
 	resetBtn:SetScript("OnClick", function()
 		LootWatchdogDB.whisperMessage = DEFAULT_WHISPER_MSG
 		editBox:SetText(DEFAULT_WHISPER_MSG)
+		RefreshPreview(DEFAULT_WHISPER_MSG)
 	end)
 
 	settingsFrame = f
@@ -561,6 +585,7 @@ local function ToggleSettings()
 		CreateSettingsFrame()
 	else
 		settingsFrame.editBox:SetText(LootWatchdogDB.whisperMessage)
+		settingsFrame.RefreshPreview(LootWatchdogDB.whisperMessage)
 	end
 
 	if settingsFrame:IsShown() then
