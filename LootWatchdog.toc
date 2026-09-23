@@ -2,7 +2,7 @@
 ## Title: |cffff4040Loot|r Watchdog
 ## Notes: Calls out Need rolls and Personal Loot drops that aren't actually an upgrade for the recipient. ElvUI-styled if ElvUI is loaded.
 ## Author: Evan
-## Version: 1.5.1
+## Version: 1.5.2
 ## X-Curse-Project-ID: 1703469
 ## SavedVariablesPerCharacter: LootWatchdogDB
 ## OptionalDeps: ElvUI

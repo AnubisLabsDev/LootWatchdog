@@ -203,7 +203,12 @@ local function EstimatePercentBelowEquipped(droppedIlvl, equippedIlvl, droppedTr
 end
 
 --------------------------------------------------------------------------------
--- Inspect queue: only one NotifyInspect in flight at a time.
+-- Inspect queue: only one NotifyInspect in flight at a time. CanInspect() is
+-- checked before every NotifyInspect call -- PersonalLootHelper does the same
+-- (see PersonalLootHelper-Core.lua's InspectGroupMember) because NotifyInspect
+-- silently does nothing if the target is out of range/LoS or otherwise not
+-- inspectable right now; without this check that case just burns the full 5s
+-- timeout below with no indication of why.
 --------------------------------------------------------------------------------
 
 local inspectQueue = {}
@@ -216,6 +221,14 @@ local function ProcessInspectQueue()
 		return
 	end
 	local job = table.remove(inspectQueue, 1)
+
+	if not CanInspect(job.unit) then
+		DebugPrint("cannot inspect " .. job.unit .. " right now (out of range/LoS, or not inspectable) -- skipping")
+		job.callback(nil)
+		ProcessInspectQueue()
+		return
+	end
+
 	inspecting = job
 	DebugPrint("requesting inspect for " .. job.unit)
 	NotifyInspect(job.unit)
@@ -223,6 +236,7 @@ local function ProcessInspectQueue()
 		if inspecting == job then
 			DebugPrint("inspect timed out for " .. job.unit .. " (no INSPECT_READY within 5s)")
 			inspecting = false
+			job.callback(nil)
 			ProcessInspectQueue()
 		end
 	end)
@@ -242,6 +256,64 @@ local function QueueInspect(unit, callback)
 	table.insert(inspectQueue, { unit = unit, callback = callback })
 	ProcessInspectQueue()
 end
+
+--------------------------------------------------------------------------------
+-- Background gear-cache warmup, modeled on PersonalLootHelper's approach
+-- (PopulateGroupInfoCache / PLH_InspectNextGroupMember): instead of only ever
+-- inspecting someone the instant they win a roll -- when they may well be out
+-- of range/LoS at that exact moment -- periodically walk the roster and
+-- inspect whoever's turn it is. A successful inspect populates the client's
+-- own GetInventoryItemLink() cache for that unit, which then stays readable
+-- for a while, so by the time an actual loot event happens there's a good
+-- chance the data is already sitting there and HandleLootWin doesn't need to
+-- wait on a fresh inspect at all.
+--------------------------------------------------------------------------------
+
+local ROSTER_WARM_INTERVAL = 15 -- seconds between each next-member warmup inspect
+local rosterWarmIndex = 0
+local rosterWarmTicker
+
+local function GetRosterUnits()
+	local units = {}
+	if IsInRaid() then
+		for i = 1, GetNumGroupMembers() do
+			table.insert(units, "raid" .. i)
+		end
+	elseif IsInGroup() then
+		for i = 1, GetNumGroupMembers() - 1 do
+			table.insert(units, "party" .. i)
+		end
+	end
+	return units
+end
+
+local function WarmNextRosterMember()
+	local units = GetRosterUnits()
+	if #units == 0 then
+		return
+	end
+	rosterWarmIndex = (rosterWarmIndex % #units) + 1
+	local unit = units[rosterWarmIndex]
+	if UnitIsUnit(unit, "player") then
+		return
+	end
+	QueueInspect(unit, function() end)
+end
+
+local function StartRosterWarmLoop()
+	if not rosterWarmTicker then
+		rosterWarmTicker = C_Timer.NewTicker(ROSTER_WARM_INTERVAL, WarmNextRosterMember)
+	end
+end
+
+local rosterFrame = CreateFrame("Frame")
+rosterFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+rosterFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+rosterFrame:SetScript("OnEvent", function()
+	if IsInGroup() then
+		StartRosterWarmLoop()
+	end
+end)
 
 --------------------------------------------------------------------------------
 -- Popup: Call Out / Whisper / Close. Custom frame instead of StaticPopup,
@@ -395,8 +467,7 @@ local function HandleLootWin(playerName, itemLink, reason)
 		return -- not gear, nothing to compare
 	end
 
-	DebugPrint(("queuing inspect on %s for %s"):format(playerName, itemLink))
-	QueueInspect(unit, function(inspectedUnit)
+	local function CompareAndMaybePopup(inspectedUnit)
 		local droppedIlvl = select(1, C_Item.GetDetailedItemLevelInfo(itemLink))
 		local equippedIlvl, equippedLink = GetWorseEquippedItemLevel(inspectedUnit, slots)
 
@@ -437,6 +508,27 @@ local function HandleLootWin(playerName, itemLink, reason)
 				ShowBadNeedPopup(playerName, itemLink, msg)
 			end
 		end
+	end
+
+	-- Fast path: if the roster warmup loop (or an earlier inspect this session)
+	-- already populated the client's inspect cache for this unit, GetInventoryItemLink
+	-- returns data immediately with no live NotifyInspect needed -- same idea as
+	-- PersonalLootHelper reading straight out of its groupInfoCache. Only fall
+	-- back to a fresh queued inspect if nothing's cached yet.
+	local _, cachedLink = GetWorseEquippedItemLevel(unit, slots)
+	if cachedLink then
+		DebugPrint(("using already-cached gear data for %s, no inspect needed"):format(playerName))
+		CompareAndMaybePopup(unit)
+		return
+	end
+
+	DebugPrint(("queuing inspect on %s for %s"):format(playerName, itemLink))
+	QueueInspect(unit, function(inspectedUnit)
+		if not inspectedUnit then
+			DebugPrint(("giving up on %s for %s: inspect failed or timed out"):format(playerName, itemLink))
+			return
+		end
+		CompareAndMaybePopup(inspectedUnit)
 	end)
 end
 
@@ -480,11 +572,20 @@ watcher:SetScript("OnEvent", function(_, _, message, _, _, _, looter)
 		end
 
 		for _, name in ipairs(candidates) do
-			if name and message:find(EscapeForPattern(name)) then
+			-- Try both the raw unit name (may be "Name-Realm" for a cross-realm
+			-- member) and the realm-stripped short name, since it's not verified
+			-- live which form (if either) actually appears in the chat text.
+			if name and (message:find(EscapeForPattern(name)) or message:find(EscapeForPattern(StripRealm(name)))) then
 				HandleLootWin(name, itemLink, "need")
 				return
 			end
 		end
+
+		local triedNames = {}
+		for _, name in ipairs(candidates) do
+			table.insert(triedNames, name or "?")
+		end
+		DebugPrint(("Need line matched but no group member name found in it -- tried: [%s]"):format(table.concat(triedNames, ", ")))
 		return
 	end
 
